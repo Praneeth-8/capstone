@@ -1,3 +1,6 @@
+[x] = Preferred, Not needed before Deadline.
+[*] = Needed before Deadline i.e Important
+
 Sat Oct  3 08:54:48 PM IST 2026
 
 0.`READ THE PDF`.
@@ -12,3 +15,13 @@ Sun Oct  4 06:37:04 PM IST 2026
     
 
 
+Wed Oct 21 05:19:30 PM IST 2026
+Interim todo:
+        File Metadata transfer -B 
+        File Modification -B
+        File Deletion -P
+        Client and server apps need more funtionality and polish.
+        File Metadata comparision -B
+        File Transfer Protocol- P
+    [X]   File Synchronization Protocol -P
+    [X] Change Detection 
