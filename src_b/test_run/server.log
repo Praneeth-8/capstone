@@ -1,0 +1,12 @@
+listening on port 8090
+stored testfile.txt (11 bytes)
+stored big.bin (20000 bytes)
+stored metadata testfile.txt.meta (checksum 1791038698, mtime 1792944347)
+stored other.txt (12 bytes)
+sync other.txt: unchanged
+stored other.txt (19 bytes)
+sync other.txt: unchanged
+stored other.txt (19 bytes)
+stored nested.txt (7 bytes)
+stored empty.txt (0 bytes)
+stored evil.txt (1 bytes)
