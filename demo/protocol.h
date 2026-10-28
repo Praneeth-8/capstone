@@ -10,7 +10,13 @@ enum Op {
 	OP_ACK,
 	OP_ERROR,
 };
-
+enum result{
+	RES_STORED=0, //file recieved and stored
+	RES_UNCHANGED,
+	RES_DELETED,
+	RES_NOT_FOUND,
+	RES_ERROR
+};
 struct header {
 	uint8_t op;
 	uint16_t name_len;

@@ -97,16 +97,105 @@ static int send_file(const char *ip, int port, const char *path)
     return -1;
 }
 
+static int send_delete(const char *ip, int port,
+                       const char *path)
+{
+    const char *base = strrchr(path, '/');
+    base = base ? base + 1 : path;
+
+    size_t name_len = strlen(base);
+
+    if (name_len == 0 || name_len > MAX_NAME_LEN ||
+        strcmp(base, ".") == 0 ||
+        strcmp(base, "..") == 0) {
+        fprintf(stderr, "Invalid filename\n");
+        return -1;
+    }
+
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) {
+        perror("socket");
+        return -1;
+    }
+
+    struct sockaddr_in addr = {0};
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons((uint16_t)port);
+
+    if (inet_pton(AF_INET, ip, &addr.sin_addr) != 1) {
+        fprintf(stderr, "Invalid address\n");
+        close(fd);
+        return -1;
+    }
+
+    if (connect(fd, (struct sockaddr *)&addr,
+                sizeof addr) < 0) {
+        perror("connect");
+        close(fd);
+        return -1;
+    }
+
+    struct header h = {
+        .op = OP_DELETE,
+        .name_len = (uint16_t)name_len,
+        .file_size = 0
+    };
+
+    uint8_t hdr[HEADER_SIZE];
+    encode_header(&h, hdr);
+
+    if (send_all(fd, hdr, HEADER_SIZE) < 0 ||
+        send_all(fd, base, name_len) < 0) {
+        perror("send");
+        close(fd);
+        return -1;
+    }
+
+    uint8_t rbuf[HEADER_SIZE];
+    struct header reply;
+
+    if (recv_all(fd, rbuf, HEADER_SIZE) < 0 ||
+        decode_header(rbuf, &reply) < 0) {
+        fprintf(stderr, "Invalid server reply\n");
+        close(fd);
+        return -1;
+    }
+
+    close(fd);
+
+    if (reply.op == OP_ACK && reply.file_size == 2) {
+        printf("Delete successful\n");
+        return 0;
+    }
+
+    fprintf(stderr, "Delete failed\n");
+    return -1;
+}
+
 int main(int argc, char *argv[])
 {
-    if (argc < 4) {
-        fprintf(stderr, "Usage: %s <ip> <port> <file>\n", argv[0]);
+    if (argc != 5) {
+        fprintf(stderr,
+                "Usage: %s <ip> <port> <upload|delete> <path>\n",
+                argv[0]);
         return 1;
     }
+
     int port = atoi(argv[2]);
+
     if (port <= 0 || port > 65535) {
         fprintf(stderr, "Invalid port\n");
         return 1;
     }
-    return send_file(argv[1], port, argv[3]) < 0 ? 1 : 0;
+
+    if (strcmp(argv[3], "upload") == 0) {
+        return send_file(argv[1], port, argv[4]) < 0 ? 1 : 0;
+    }
+
+    if (strcmp(argv[3], "delete") == 0) {
+        return send_delete(argv[1], port, argv[4]) < 0 ? 1 : 0;
+    }
+
+    fprintf(stderr, "Unknown operation: %s\n", argv[3]);
+    return 1;
 }

@@ -8,26 +8,48 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <sys/socket.h>
+#include <errno.h>
 #include "net.h"
 #include "protocol.h"
+#include <time.h>
 
-//#define MAX_NAME 256
 #define BUF_SIZE 4096
 #define MAX_FILE_SIZE 104857600
-//#define TYPE_META 2
-//#define TYPE_SYNC 3
+#define RES_ERROR -1
 
-/** typedef struct {
-    char name[MAX_NAME];
-    uint32_t checksum;
-    int64_t mtime;
-    uint32_t mode;
-} FileMeta;**/
 
-#define RESULT_STORED 0
-#define RESULT_UNCHANGED 1
-#define RESULT_ERROR -1
 
+static void log_action(const char *ip,
+                       const char *action,
+                       const char *name,
+                       const char *result,
+                       uint64_t size)
+{
+    FILE *log = fopen("server.log", "a");
+
+    if (log == NULL) {
+        perror("server.log");
+        return;
+    }
+
+    time_t now = time(NULL);
+    struct tm tm_now;
+    char timestamp[32] = "unknown-time";
+
+    if (now != (time_t)-1 &&
+        localtime_r(&now, &tm_now) != NULL) {
+        strftime(timestamp, sizeof timestamp,
+                 "%Y-%m-%d %H:%M:%S", &tm_now);
+    }
+
+    fprintf(log,
+            "%s | IP: %s | Action: %s | File: %s | "
+            "Result: %s | Size: %llu bytes\n",
+            timestamp, ip, action, name, result,
+            (unsigned long long)size);
+
+    fclose(log);
+}
 int compute_checksum(const char *path, uint32_t *out) {
 		unsigned char buf[BUF_SIZE];
     FILE *f = fopen(path, "rb");
@@ -57,28 +79,6 @@ static int files_identical(const char *a, const char *b)
     return ca == cb;
 }
 
-/**int send_metadata(int fd, const FileMeta *meta) {
-    return send_all(fd, meta, sizeof(FileMeta));
-}
-
-int recv_metadata(int fd, FileMeta *meta) {
-    return recv_all(fd, meta, sizeof(FileMeta));
-}
-
-int get_file_metadata(const char *path, FileMeta *meta) {
-    struct stat st;
-    if (stat(path, &st) < 0) return -1;
-    if (!S_ISREG(st.st_mode)) return -1;
-    memset(meta, 0, sizeof(FileMeta));
-    const char *base = strrchr(path, '/');
-    base = base ? base + 1 : path;
-    strncpy(meta->name, base, MAX_NAME - 1);
-    if (compute_checksum(path, &meta->checksum) < 0) return -1;
-    meta->mtime = (int64_t)st.st_mtime;
-    meta->mode = (uint32_t)st.st_mode;
-    return 0;
-}**/
-
 int send_u32(int fd, uint32_t value) {
     uint32_t net_value = htonl(value);
     return send_all(fd, &net_value, sizeof(net_value));
@@ -106,11 +106,11 @@ static int recv_content(int fd, const char *name, uint64_t size)
     char tmp_name[MAX_NAME_LEN + 8];
     char buffer[BUF_SIZE];
  
-    if (size > MAX_FILE_SIZE) return RESULT_ERROR;
+    if (size > MAX_FILE_SIZE) return RES_ERROR;
     snprintf(tmp_name, sizeof tmp_name, "%s.part", name);
  
     FILE *f = fopen(tmp_name, "wb");
-    if (!f) return RESULT_ERROR;
+    if (!f) return RES_ERROR;
  
     uint64_t remaining = size;
     while (remaining > 0) {
@@ -119,110 +119,101 @@ static int recv_content(int fd, const char *name, uint64_t size)
             fwrite(buffer, 1, chunk, f) != chunk) {
             fclose(f);
             remove(tmp_name);
-            return RESULT_ERROR;
+            return RES_ERROR;
         }
         remaining -= chunk;
     }
     if (fclose(f) != 0) {
         remove(tmp_name);
-        return RESULT_ERROR;
+        return RES_ERROR;
     }
  
     /* already have the same file? then drop the upload */
     if (access(name, F_OK) == 0 && files_identical(tmp_name, name)) {
         remove(tmp_name);
-        return RESULT_UNCHANGED;
+        return RES_UNCHANGED;
     }
  
     if (rename(tmp_name, name) < 0) {
         remove(tmp_name);
-        return RESULT_ERROR;
+        return RES_ERROR;
     }
-    return RESULT_STORED;
+    return RES_STORED;
 }
 
-/**int save_metadata(const FileMeta *meta, const char *name) {
-    char meta_path[MAX_NAME + 8];
-    snprintf(meta_path, sizeof(meta_path), "%s.meta", name);
-    FILE *fptr = fopen(meta_path, "wb");
-    if (!fptr) return -1;
-    if (fwrite(meta, sizeof(FileMeta), 1, fptr) != 1) {
-        fclose(fptr);
-        return -1;
-    }
-    if (fclose(fptr) != 0) return -1;
-    printf("stored metadata %s (checksum %u, mtime %lld)\n", meta_path, meta->checksum, (long long)meta->mtime);
-    fflush(stdout);
-    return 0;
-}**/
+static int handle_delete(int fd, const struct header *h,const char *client_ip){
+	char raw[MAX_NAME_LEN + 1];
+	char name[MAX_NAME_LEN + 1];
+	if(h->name_len == 0||h->name_len>MAX_NAME_LEN) return RES_ERROR;
+	if(recv_all(fd, raw, h->name_len)<0) return RES_ERROR;
+	raw[h->name_len] = '\0';
 
-/**int handle_meta(int fd) {
-    FileMeta meta;
-    char name[MAX_NAME] = {0};
-    if (recv_metadata(fd, &meta) < 0) return -1;
-    meta.name[MAX_NAME - 1] = '\0';
-    if (safe_name(name, meta.name) < 0) return -1;
-    return save_metadata(&meta, name);
-}**/
+	if(safe_name(name,raw)<0) return RES_ERROR;
+	
+	if(remove(name)== 0){
+		printf("File %s deleted successfully. \n", name);
+		log_action(client_ip, "DELETE", name, "DELETED", 0);
+		return RES_DELETED;
+	}
+	else if (errno == ENOENT){
+		printf("File %s NOT FOUND.\n", name);
+		log_action(client_ip, "DELETE", name, "NOT_FOUND", 0);
+		return RES_NOT_FOUND;
+	}
+	else{
+		perror("Error deleting file");
+		return RES_ERROR;
+	}
 
-/**int handle_sync(int fd) {
-    FileMeta remote, local;
-    uint32_t send_flag;
-    char name[MAX_NAME] = {0};
-    if (recv_metadata(fd, &remote) < 0) return -1;
-    remote.name[MAX_NAME - 1] = '\0';
-    if (safe_name(name, remote.name) < 0) return -1;
-    if (get_file_metadata(name, &local) < 0) {
-        memset(&local, 0, sizeof(FileMeta));
-        strncpy(local.name, name, MAX_NAME - 1);
-    }
-    if (send_metadata(fd, &local) < 0) return -1;
-    if (recv_u32(fd, &send_flag) < 0) return -1;
-    if (send_flag == 0) {
-        printf("sync %s: unchanged\n", name);
-        fflush(stdout);
-    } else if (recv_content(fd, name, remote.mtime) < 0) {
-        return -1;
-    }
-    return save_metadata(&remote, name);
-}**/
+}
 
-static int handle_file(int fd, const struct header *h)
+
+static int handle_file(int fd, const struct header *h,const char *client_ip)
 {
     char raw[MAX_NAME_LEN + 1];    /* +1 for the '\0' we add ourselves */
     char name[MAX_NAME_LEN + 1];
  
-    if (h->name_len == 0 || h->name_len > MAX_NAME_LEN) return RESULT_ERROR;
-    if (recv_all(fd, raw, h->name_len) < 0) return RESULT_ERROR;
+    if (h->name_len == 0 || h->name_len > MAX_NAME_LEN) return RES_ERROR;
+    if (recv_all(fd, raw, h->name_len) < 0) return RES_ERROR;
     raw[h->name_len] = '\0';       /* recv_all gives raw bytes, no terminator */
-    if (safe_name(name, raw) < 0) return RESULT_ERROR;
+    if (safe_name(name, raw) < 0) return RES_ERROR;
  
     int r = recv_content(fd, name, h->file_size);
-    if (r == RESULT_STORED)
+    if (r == RES_STORED){
         printf("stored %s (%llu bytes)\n", name, (unsigned long long)h->file_size);
-    else if (r == RESULT_UNCHANGED)
+				log_action(client_ip, "UPLOAD", name,
+               "STORED", h->file_size);}
+    else if (r == RES_UNCHANGED){
         printf("unchanged %s (already up to date)\n", name);
+			log_action(client_ip, "UPLOAD", name,
+               "UNCHANGED", h->file_size);
+		}
+				else{log_action(client_ip, "UPLOAD", name,
+               "ERROR", h->file_size);}
     fflush(stdout);
     return r;
 }
 
 
-int handle_client(int fd) {
+int handle_client(int fd,const char *client_ip) {
 	uint8_t hdr[HEADER_SIZE];
 	struct header h;
-	if( recv_all(fd,hdr,HEADER_SIZE)<0){return RESULT_ERROR;}
-	if(decode_header(hdr,&h)<0){return RESULT_ERROR;}
+	if( recv_all(fd,hdr,HEADER_SIZE)<0){return RES_ERROR;}
+	if(decode_header(hdr,&h)<0){return RES_ERROR;}
 
 	switch(h.op){
 	 case OP_SEND_FILE:
-		return handle_file(fd,&h);
+		return handle_file(fd,&h,client_ip);
+	 case OP_DELETE:
+		return handle_delete(fd,&h,client_ip);
 	 default:
-		return RESULT_ERROR;
+		return RES_ERROR;
 
 
 
 	}
 }
+
 static int send_reply(int fd, uint8_t op, uint64_t code)
 {
     struct header h = { .op = op, .name_len = 0, .file_size = code };
@@ -267,19 +258,28 @@ int main(int argc, char *argv[])
     fflush(stdout);
  
     for (;;) {
-        int conn = accept(server_fd, NULL, NULL);
-        if (conn < 0) { perror("accept"); continue; }
- 
-        int result = handle_client(conn);
-        if (result == RESULT_STORED)
-            send_reply(conn, OP_ACK, 0);
-        else if (result == RESULT_UNCHANGED)
-            send_reply(conn, OP_ACK, 1);
-        else {
+			struct sockaddr_in client_addr;
+			socklen_t client_len = sizeof(client_addr);
+			
+			int conn = accept(server_fd, (struct sockaddr *)&client_addr, &client_len);
+			if (conn < 0) { perror("accept"); continue; }
+			
+			char client_ip[INET_ADDRSTRLEN];
+
+			if (inet_ntop(AF_INET, &client_addr.sin_addr,
+                  client_ip, sizeof(client_ip)) == NULL) {
+        snprintf(client_ip, sizeof(client_ip), "unknown");
+			}
+
+			int result = handle_client(conn,client_ip);
+			if (result == RES_STORED){send_reply(conn, OP_ACK, 0);}
+			else if (result == RES_UNCHANGED){ send_reply(conn, OP_ACK, 1);}
+			else if(result == RES_DELETED){send_reply(conn,OP_ACK,2);}
+			else {
             fprintf(stderr, "request failed\n");
             send_reply(conn, OP_ERROR, 0);
-        }
-        close(conn);               
+			}
+      close(conn);               
     }
 }
 
