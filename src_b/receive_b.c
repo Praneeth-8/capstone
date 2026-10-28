@@ -13,7 +13,6 @@
 #define MAX_NAME 256
 #define BUF_SIZE 4096
 #define MAX_FILE_SIZE 104857600
-#define TYPE_FILE 1
 #define TYPE_META 2
 #define TYPE_SYNC 3
 
@@ -120,35 +119,28 @@ int recv_content(int fd, const char *name, int64_t mtime) {
     return 0;
 }
 
-int handle_file(int fd) {
-    uint32_t name_len;
-    char raw_name[MAX_NAME] = {0};
-    char name[MAX_NAME] = {0};
-    if (recv_u32(fd, &name_len) < 0) return -1;
-    if (name_len == 0 || name_len >= MAX_NAME) return -1;
-    if (recv_all(fd, raw_name, name_len) < 0) return -1;
-    if (safe_name(name, raw_name) < 0) return -1;
-    return recv_content(fd, name, 0);
+int save_metadata(const FileMeta *meta, const char *name) {
+    char meta_path[MAX_NAME + 8];
+    snprintf(meta_path, sizeof(meta_path), "%s.meta", name);
+    FILE *fptr = fopen(meta_path, "wb");
+    if (!fptr) return -1;
+    if (fwrite(meta, sizeof(FileMeta), 1, fptr) != 1) {
+        fclose(fptr);
+        return -1;
+    }
+    if (fclose(fptr) != 0) return -1;
+    printf("stored metadata %s (checksum %u, mtime %lld)\n", meta_path, meta->checksum, (long long)meta->mtime);
+    fflush(stdout);
+    return 0;
 }
 
 int handle_meta(int fd) {
     FileMeta meta;
     char name[MAX_NAME] = {0};
-    char meta_path[MAX_NAME + 8];
     if (recv_metadata(fd, &meta) < 0) return -1;
     meta.name[MAX_NAME - 1] = '\0';
     if (safe_name(name, meta.name) < 0) return -1;
-    snprintf(meta_path, sizeof(meta_path), "%s.meta", name);
-    FILE *fptr = fopen(meta_path, "wb");
-    if (!fptr) return -1;
-    if (fwrite(&meta, sizeof(FileMeta), 1, fptr) != 1) {
-        fclose(fptr);
-        return -1;
-    }
-    if (fclose(fptr) != 0) return -1;
-    printf("stored metadata %s (checksum %u, mtime %lld)\n", meta_path, meta.checksum, (long long)meta.mtime);
-    fflush(stdout);
-    return 0;
+    return save_metadata(&meta, name);
 }
 
 int handle_sync(int fd) {
@@ -167,15 +159,15 @@ int handle_sync(int fd) {
     if (send_flag == 0) {
         printf("sync %s: unchanged\n", name);
         fflush(stdout);
-        return 0;
+    } else if (recv_content(fd, name, remote.mtime) < 0) {
+        return -1;
     }
-    return recv_content(fd, name, remote.mtime);
+    return save_metadata(&remote, name);
 }
 
 int handle_client(int fd) {
     uint32_t type;
     if (recv_u32(fd, &type) < 0) return -1;
-    if (type == TYPE_FILE) return handle_file(fd);
     if (type == TYPE_META) return handle_meta(fd);
     if (type == TYPE_SYNC) return handle_sync(fd);
     return -1;
