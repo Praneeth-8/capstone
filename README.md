@@ -1,7 +1,6 @@
 # FsynC
 
-A small Dropbox/rsync-style file synchronizer in C99, built on the capstone `demo/` code
-(same `send_all`/`recv_all`, same 11-byte header, same log line style).
+A small Dropbox/rsync-style file synchronizer in C99.
 
 A server keeps a shared directory. Any number of clients keep local copies. A change made in
 one client goes to the server and is pushed to every other connected client within about a second.
